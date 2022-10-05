@@ -1,0 +1,177 @@
+/* PAGE CONTACTO */
+
+#main-preguntas{
+    margin-top: 270px;
+    width: 100%;
+    text-align: center;
+    padding-bottom: 100px;
+}
+
+#main-preguntas h1 {
+    margin-bottom: 100px;
+}
+
+
+
+/* **************************************************** */
+/* formulario*/
+.container-form{
+    background-color: #8e9aaf;
+    width: 500px;
+    border-radius: 57px;
+    margin-left: 410px;
+    margin-right: 27px;
+    text-align: center;
+}
+.text-form{
+    margin: 21px 70px 31px 70px;
+    font-family: 'Akaya Kanadaka', helvetica, sans-serif;
+    font-size: 36px;
+    color: #541690;
+}
+.form-input label{
+    display: block;
+    margin-bottom: 10px;
+    font-size: 20px;
+    font-family: 'Akaya Kanadaka', Helvetica, sans-serif;
+}
+.form-input input{
+    width: 331px;
+    font-family: 'Akaya Kanadaka', Helvetica, sans-serif;
+    padding: 10px;
+    font-size: 17px;
+    border-radius: 14px;
+    border: none;
+    height: 43px;
+    margin-bottom: 36px;
+}
+.form-input textarea{
+    width: 340px;
+    height: 180px;
+    font-family: 'Akaya Kanadaka', Helvetica, sans-serif;
+    padding: 10px;
+    font-size: 17px;
+    border-radius: 14px;
+    border: none;
+    margin-bottom: 30px;
+}
+/* boton */
+.submit-upload > button {
+    background-color: #6A478B;
+    margin-bottom: 16px;
+    border: none;
+    padding: 10px;
+    border-radius: 11px;
+    font-family: 'Akaya Kanadaka', Helvetica, sans-serif;
+    font-size: 20px;
+    color: #FFFFFF;
+    cursor: pointer;
+}
+.submit-upload button:hover {
+    transform: scale(1.03);
+    transition: .3s;
+    background-color: #a451f1;
+}
+
+/* Mapa */
+#mapa iframe {
+    border-radius: 10%;
+    box-shadow: -10px -10px rgba(7, 7, 7, 0.192),0 0 32px rgba(233, 235, 241, 0.87);
+    width: 500px;
+  }
+/* query responsive del formulario */
+@media screen and (max-width: 1024px){
+    .submit-upload > button {
+        font-size: 14px;
+    }
+}
+@media screen and (max-width: 920px){
+    #main-preguntas{
+        display: block;
+        margin-top: 300px;
+        justify-content:center;
+    }
+    .div-direccion {
+        margin-top: 60px;
+        margin-left: 0;
+        width: auto;
+    }
+    #contacto {
+        justify-content: center;
+        margin-top: 26px;
+        margin-left: 20%;
+        margin-right: 20%;
+    }
+    .container-form {
+        max-width: 595px;
+        margin-left: 20%;
+    }
+    #form-testimonio {
+        margin-top: 455px;
+    }
+}
+@media screen and (max-width:768px){
+    #main-preguntas {
+        display: block;
+        margin-top: 150px;
+        justify-content: center;
+    }
+    #contacto{
+        width: 400px;
+        height: 130px;
+        margin-top: 26px;
+        margin-left: 20%;
+    }
+    .container-form {
+        max-width: 400px;
+        margin-left: 20%;
+        margin-right: 10%;
+        width: auto;
+    }
+    .form-input label {
+        font-size: 15px;
+    }
+    .form-input input {
+        width: 240px;
+        height: 35px;
+    }
+    .form-input textarea {
+        width: 240px;
+        height: 140px;
+    }
+    .submit-upload > button {
+        padding: 8px;
+        font-size: 13px;
+    }
+}
+@media screen and (max-width:540px){
+    #contacto{
+        width: auto;
+        height: 130px;
+        margin-top: 26px;
+        margin-left: 20%;
+        text-align: center;
+        align-items: center;
+    }
+}
+@media screen and (max-width: 400px){
+    .form-input textarea, .form-input input {
+        width: calc(100% - 40px);
+        overflow-x:hidden;
+    }
+    .container-form{
+        margin-top: 520px;
+        margin-left: 27px;
+        margin-right: 27px;
+    }
+    .text-form {
+        font-size: 20px;
+        margin: 0px 15px 31px 15px;
+        padding-top: 10px;
+    }
+}
+@media screen and (max-width: 400px){
+    #form-testimonio {
+        margin-top: 77px;
+    }
+}

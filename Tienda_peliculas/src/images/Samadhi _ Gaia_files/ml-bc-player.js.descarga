@@ -1,0 +1,1124 @@
+$.fn.initBCPlayer = function (player_id, has_subtitles, ploop, initial_poster_image) {
+
+  videojs.getPlayer('bc-player-' + player_id).ready(function () {
+
+    var myPlayer = this,
+      target = $('#bc-grid-player-' + player_id),
+      ePlayer = myPlayer.el(),
+      playing = false,
+      started = false,
+      progress_check = null,
+      seeking_check = null,
+      duration = 0,
+      current_position = 0,
+      complete = false,
+      qualified_view = false,
+      btnbox = $(target).parent().parent().find('.bc-player__button-box'),
+      plbox = $(target).parent().find('.playlist-wrapper'),
+      loop = ploop,
+      captions = null,
+      beacon_interval = null,
+      event_interval = null,
+      loaded_language = null,
+      va_init = false,
+      va_record = null,
+      va_data = {
+        lastPlayState : "New Record",
+        position : 0,
+        sleepCount : 0,
+        seekCount : 0,
+        histogram : {
+          timecodeHistory : [],
+          histogramInterval : 6000,
+          histogramResolution : 30000
+        },
+        lastEventUpd : 0,
+        events : []
+      };
+
+    $(target).find('video').trigger("bcPlayer:ready");
+
+    ePlayer.addEventListener("mouseover", onPlayerMouseOver);
+    ePlayer.addEventListener("mouseout", onPlayerMouseOut);
+
+    // Handle subtitle/captions
+    if (has_subtitles) {
+      var checks = 0;
+
+      function checkReadyForCaptions() {
+
+        // Auto play must be enabled to set mode for CC track to show by default on load
+        if($(target).find('video').attr('autoplay')) {
+
+          // Sometimes we have to wait for the player to get the track element processed (no known event to listen for at this time)
+          if (myPlayer.textTracks()[1]) {
+
+            myPlayer.textTracks()[1].mode = "showing";
+
+          } else if (checks < 10) {
+
+            setTimeout(function () {
+              checks++;
+              checkReadyForCaptions();
+            }, 500);
+
+          } else {
+            console.log("Warning: Could not load captions track on null object.");
+          }
+
+        }
+
+      }
+
+      // try to add caption track
+      checkReadyForCaptions();
+
+    }
+
+    function onPlayerMouseOver() {
+      if (playing) {
+        $(btnbox).hide(); // leaving button hide out for now, they will only show if video is stopped
+      }
+    }
+
+    function onPlayerMouseOut() {
+      if (!playing) {
+        $(btnbox).show();
+      }
+    }
+
+    function contentLoadComplete(custom_loaded) {
+
+      // If we have custom art to load, do it now
+      if (initial_poster_image && !custom_loaded ) {
+
+        updateCoverArt(initial_poster_image);
+        //if we have a media gaia and no custom poster go get it
+      } else if($(ePlayer).attr('data-account')=='gaia' && !initial_poster_image) {
+
+        setGaiaMediaPoster($(ePlayer).attr('data-media-id'), removeLoadingIcon);
+
+        // Else reveal the player
+      } else {
+
+        $('.bc-grid__tile')
+          .animate(
+            {'opacity': 1},
+            500,
+            'swing',
+            function(){
+              $(this).find('button').animate({"opacity" : 1}, 500).delay(1000);
+        });
+
+        removeLoadingIcon();
+
+      }
+
+    }
+
+    function removeLoadingIcon() {
+      $(target)
+      .find('.loading').remove().end()
+      .find('.bc-player__inner')
+      .animate({opacity: 1}, 500, function () {
+        $(target).find('video').trigger("bcPlayer:contentLoadComplete");
+      });
+    }
+
+    function updateCoverArt(image_url) {
+
+      var interval = null,
+        interval_count = 0;
+
+      interval = setInterval(function () {
+
+        if (($(this).attr('data-media-id') !== 'undefined' && image_url) ||
+          $(target).find('.vjs-poster').css('background-image') !== 'none' ||
+          $(target).find('video').attr('poster') !== undefined ||
+          interval_count >= 10) {
+
+          clearInterval(interval);
+
+          $(target).find('.vjs-poster').attr('style', '').addClass('lazyload').attr('data-bg', image_url).removeClass('vjs-hidden');
+          $(target).removeClass('vjs-hidden');
+          $(target).find('video').trigger("bcPlayer:updateCoverArtComplete");
+
+          var custom_loaded = !!(initial_poster_image);
+
+          contentLoadComplete(custom_loaded);
+
+        }
+
+        interval_count++;
+
+      }, 500);
+
+    }
+
+    $(target).on("bcPlayer:stopAllPlayback", function (e) {
+      myPlayer.pause();
+    });
+
+    // update cover art
+    $(target).on("bcPlayer:updateCoverArt", function (e, data) {
+
+      if (player_id === String(data.tid)) {
+        updateCoverArt(data.img)
+      }
+
+    });
+
+    // handle conflicts with other players playing simultaneously
+    $(target).on("bcPlayer:playbackStarted", function (e, id) {
+      if (player_id !== id) {
+        myPlayer.pause();
+
+      }
+
+    });
+
+    $(target).on("bcPlayer:unmuteAllPlayers", function (e) {
+      myPlayer.muted(false);
+    });
+
+    $(target).on("bcPlayer:muteAllPlayers", function (e) {
+      myPlayer.muted(true);
+    });
+
+    // user clicks to define interaction (kills the autoplay features such as loop and mute)
+    $(target).on("click touchstart", function (e) {
+      // Remove the autoplay loop actions after user interacts
+
+      loop = false;
+
+      // handle video loads for media id
+      if($(target).find('video').attr('data-account') === "gaia") {
+
+        loadGaiaMediaId($(target).find('video').attr('data-media-id'), function(){
+          autoPlayContent();
+        });
+
+      }
+
+      // We only want this to occur on the first click
+      $(target).off("click touchstart");
+
+    });
+
+
+    /* ----Brightcove Player Event Handlers---- */
+
+    myPlayer.on("error", function(error) {
+
+      var errNo = myPlayer.error().code;
+      var duration = myPlayer.duration();
+
+      log_va('lastPlayState', 'MediaFailed');
+
+    });
+
+    myPlayer.on("play", function () {
+
+      // stop other players when this player starts
+      $('video').trigger("bcPlayer:playbackStarted", player_id);
+
+      // startup the VA tracking intervals for the current video only
+      $(target).find('video').trigger("bcPlayer:startVA", player_id);
+
+      // unmute all other players if last played is unmuted
+      if (!myPlayer.muted()) {
+        $('video').trigger("bcPlayer:unmuteAllPlayers");
+      }
+      $(btnbox).fadeOut();
+      $(plbox).fadeOut(500);
+
+      //tracking
+      if (!started && dataLayer) {
+        dataLayer.push({
+          'event': 'customEvent',
+          'eventCategory': 'video playback',
+          'eventAction': 'watched',
+          'eventLabel': 'started'
+        });
+      }
+
+      playing = true;
+      started = true;
+      va_init = true;
+
+      log_va('lastPlayState', 'Playing');
+
+    });
+
+    myPlayer.on("pause", function () {
+      playing = false;
+      $(btnbox).fadeIn();
+      $(plbox).fadeIn(500);
+
+      log_va('lastPlayState', 'Paused');
+
+    });
+
+    myPlayer.on('seeking', function () {
+      log_va('lastPlayState', 'Seeking');
+    });
+
+    myPlayer.on('seeked', function () {
+      // Update current position when seeking ends
+      current_position = Math.floor(myPlayer.currentTime());
+    });
+
+    myPlayer.on('timeupdate', function (evt) {
+      var time_update = Math.floor(myPlayer.currentTime());
+
+      if(time_update > current_position) {
+        current_position = time_update;
+
+        // Update the position tracking for VA
+        va_data.position = current_position;
+
+      }
+
+      // tracking
+      if (dataLayer && myPlayer.currentTime() > 15 && !qualified_view) {
+        //console.log("qualified view fired");
+        qualified_view = true;
+        dataLayer.push({
+          'event': 'customEvent',
+          'eventCategory': 'video playback',
+          'eventAction': 'watched',
+          'eventLabel': 'qualified view'
+        });
+      }
+
+      // Track the completion of the current video
+      if (Math.floor(myPlayer.currentTime()) >= Math.floor(duration) && complete === false && duration !== 0) {
+        // Player has reached end of video playback
+
+        complete = true;
+        dataLayer.push({
+          'event': 'customEvent',
+          'eventCategory': 'video playback',
+          'eventAction': 'watched',
+          'eventLabel': 'complete'
+        });
+      }
+
+    });
+
+    myPlayer.on('loadstart', function () {
+      // reset tracking values when new video loading begins
+      $(target).find('video').off("bcPlayer:startVA");
+
+      va_init = false;
+      current_position = 0;
+      clearInterval(beacon_interval);
+      clearInterval(event_interval);
+
+      va_data = {
+        lastPlayState : "New Record",
+        position : 0,
+        sleepCount : 0,
+        seekCount : 0,
+        histogram : {
+          timecodeHistory : [],
+          histogramInterval : 6000,
+          histogramResolution : 30000
+        },
+        lastEventUpd : 0,
+        events : []
+      };
+
+      // Start the intervals
+      myPlayer.trigger("bcPlayer:loadStart");
+
+      log_va('lastPlayState', 'Opening');
+
+    });
+
+    myPlayer.on('loadeddata', function () {
+      $(target).find('video').trigger("bcPlayer:loadeddata");
+    });
+
+    myPlayer.on('loadedmetadata', function () {
+      $(target).find('video').trigger("bcPlayer:loadedmetadata", player_id);
+
+      // Set dynamically loaded captions if available
+      if(captions){
+        $.each(captions, function (i, val){
+          myPlayer.addRemoteTextTrack(val);
+        });
+
+        // Get the user experience language
+        var user_language = GAIA_GLOBALS.lang;
+
+        // Get the captions
+        var track_language;
+        var tracks = myPlayer.textTracks();
+
+        for (var i = 0; i < (tracks.length); i++) {
+          track_language = tracks[i].language.substr(0, 2);
+
+          if (track_language) {
+            if (track_language === user_language && loaded_language !== user_language) {
+              tracks[i].mode = "showing";
+            } else {
+              tracks[i].mode = "disabled";
+            }
+          }
+
+        }
+
+      }
+
+      // set duration/length of vid once we have the data
+      duration = myPlayer.duration();
+
+    });
+
+    myPlayer.on('progress', function () {
+      // Cleanup the previous buffering check
+      clearTimeout(progress_check);
+
+      log_va('lastPlayState', 'Buffering');
+
+      // BC doesn't return a playing status after buffering halts so we log it with our own checks
+      progress_check = setTimeout(function () {
+        if(playing) {
+          log_va('lastPlayState', 'Playing');
+        }
+      }, 500);
+
+    });
+
+    myPlayer.on("ended", function () {
+      if (loop) {
+        myPlayer.play();
+      }
+
+      $(target).find('video').trigger("bcPlayer:ended");
+
+      log_va('lastPlayState', 'Stopped');
+      event_interval_va();
+
+      // cleanup any tracking cycles still running
+      clearInterval(beacon_interval);
+      clearInterval(event_interval);
+
+    });
+
+    /* ----Gaia Player Custom Event Handlers---- */
+    // handle dynamic content load
+    $(target).on("bcPlayer:loadNewVideo", function (e, data) {
+
+      // Remove the click listener from components that dispatch bcPlayer:loadNewVideo
+      // This is only needed on first interaction of said components
+      $(target).off("click touchstart");
+
+      // Be sure to close VA for a previously loaded video when new content is loaded in same player container
+      // TODO: add a check for ended status before you double the Stopped post to va via "event_interval" function
+      log_va('lastPlayState', 'Stopped');
+      event_interval_va();
+
+      if (player_id === String(data.tid)) {
+
+        captions = (data.captions) ? data.captions : null;
+
+        function executeLoad() {
+
+          if(data.autoplay) {
+
+            contentLoadComplete();
+
+            // Handle playback if not blocked - ie) iOS users must click
+            autoPlayContent();
+
+          } else {
+
+            // Load custom cover art
+            if (data.img) {
+              updateCoverArt(data.img)
+            } else {
+              // call ui complete actions
+              contentLoadComplete();
+            }
+
+          }
+
+        }
+
+        // If the config is using a Gaia Media Id
+        if(data.acct_id === 'gaia') {
+
+          loadGaiaMediaId(data.vid, function(){
+            executeLoad();
+          });
+
+          // Get the video object via the catalog from BC Id
+        } else {
+
+          myPlayer.catalog.getVideo(data.vid, function (error, video) {
+
+            //remove the poster, avoid loading the poster each time a video is changed
+            video.poster = "";
+
+            if (error !== null) {
+              console.log("ERROR - bcPlayer:loadNewVideo: ", error);
+            }
+
+            // Load the video object into the player
+            myPlayer.catalog.load(video);
+
+            executeLoad();
+
+          });
+
+        }
+
+      }
+
+    });
+
+    // TODO: REMOVE CODE BLOCK --- This listener will be deprecated after migration is complete --- REMOVE CODE BLOCK
+    // handle dynamic content playback
+    $(target).on("bcPlayer:playNewVideo", function (e, data, pvid) {
+
+      var id = (typeof data === 'object') ? data.tid : data,
+        vid = (typeof data === 'object') ? data.vid : pvid;
+
+      if (player_id === String(id)) {
+
+        captions = (data.captions) ? data.captions : null;
+
+        // If the config is using a Gaia Media Id
+        if(data.acct_id === 'gaia') {
+
+          //console.log("gaia account, call loadGaiaMediaID on bcPlayer:playNewVideo")
+
+          loadGaiaMediaId(data.vid);
+
+          // Get the video object via the catalog from BC Id
+        } else {
+
+          // Get the video object via the catalog
+          myPlayer.catalog.getVideo(vid, function (error, video) {
+
+            if (error !== null) {
+              console.log("Error: ", error);
+            }
+
+            // Load the video object into the player
+            myPlayer.catalog.load(video);
+
+            // Handle playback if not blocked - ie) iOS users must click
+            autoPlayContent();
+
+          });
+
+        }
+
+      }
+
+    });
+
+    /* ---- beaconInterval VA Method ----  */
+    function beacon_interval_va() {
+
+      var position_data = {
+        "lastPlayState" : va_data.lastPlayState,
+        "position" : current_position
+      };
+
+      if(va_record) {
+        post_va(position_data, "Beacon");
+      }
+
+    }
+
+    /* ---- eventInterval VA Method ----  */
+    function event_interval_va() {
+
+      var seek_count = va_data.seekCount / 2,
+        clean_data = $.extend({}, va_data, {seekCount: seek_count});
+
+      if(va_record) {
+        post_va(va_data, "Event");
+
+      }
+
+    }
+
+    /* ---- Send VA Data ----  */
+    function post_va(post_data, type) {
+
+      post_data.lastEventUpd = Date.now();
+
+      $.ajax({
+        method: 'POST',
+        url: GAIA_GLOBALS.dbi_va_api + '/analytics/st/upd/' + va_record.row.uuid + '/' + va_record.token,
+        data: JSON.stringify(post_data),
+        contentType: 'application/json',
+        processData: false,
+        dataType: 'json',
+        success: function (data, textStatus, jqXHR) {
+
+          // Good Response status 2 - record updated successfully
+          if (data && data.status === 2) {
+
+          // Bad Response failure
+          } else {
+            console.log("VA Response Status: Unknown -> ", data);
+          }
+
+        },
+        error: function (jqXHR, textStatus, errorThrown) {
+
+          console.log("Unknown Error (usually 400): jqXHR: ", jqXHR, " VA Post Error: ", textStatus, " errorThrown: ", errorThrown);
+
+          if (jqXHR.responseText) {
+            var res = JSON.parse(jqXHR.responseText);
+            console.log("Unknown Error responseText: ", res);
+          }
+
+        }
+
+      });
+
+    }
+
+    /* ---- Log VA Data ----  */
+    function log_va(key, value) {
+
+      if(va_data[key] && va_data.lastPlayState !== value){
+
+        // if this is an events array update ie) Captions Turned On for a language
+        if(typeof va_data[key] === "object") {
+
+          // va_data[key] = $.extend(va_data[key], value);
+          // TODO: Handle the captions turn on events here
+
+        } else {
+
+          // Set the root key value in post data
+          va_data[key] = value;
+
+          // Special handling for Seeking event - to remove "pause" and "playing" events before/after a user seeks
+          // This will keep the analytics clear of the actual user interaction, otherwise, BC fires a pause event before every seek
+          var check1 = (va_data.events[va_data.events.length-1]) ? va_data.events[va_data.events.length-1].name : null,
+            check2 = (va_data.events[va_data.events.length-2]) ? va_data.events[va_data.events.length-2].name : null;
+
+          if(value === "Playing" && check1 === "Seeking" && check2 === "Paused") {
+
+            // Remove the last 2 items in events because BC sends duplicative event updates when a user seeks
+            va_data.events = va_data.events.slice(0, va_data.events.length - 2);
+
+            if (va_data.events[va_data.events.length - 1].name !== "Seeking") {
+
+              // Clear the seeking check for return to playing status
+              clearTimeout(seeking_check);
+
+              // Add the actual single entry for Seeking
+              va_data.events.push({timestamp: Date.now(), name: "Seeking"});
+
+              // Post seeking, BC does not return a playing event after user seeked and resumes play
+              // We add a check to do just that
+              seeking_check = setTimeout(function () {
+
+                // if the last thing in event array is still 'Seeking' from our manual push, let's get status back to playing
+                if (va_data.events[va_data.events.length - 1].name === "Seeking") {
+                  va_data.events.push({timestamp: Date.now(), name: (playing) ? "Playing" : "Paused"});
+                }
+
+              }, 500);
+
+            }
+
+          } else if (value === 'Stopped' && check1 === 'Paused') {
+
+            // remove the last item in list (Paused) value because BC sends this before 'ended' event fires for some reason
+            va_data.events.pop();
+            // Allow the last event coming in "Stopped" to be logged
+            va_data.events.push({timestamp: Date.now(), name: value});
+
+          } else if(value === 'Seeking' && (check1 === 'Paused' || check1 === 'Buffering')) {
+
+            va_data.seekCount++;
+            va_data.events.push({timestamp: Date.now(), name: value});
+
+          } else {
+            va_data.events.push({timestamp : Date.now(), name : value });
+          }
+
+        }
+
+      }
+
+    }
+
+    /* ---- Create new VA object ---- */
+    function init_va(mid) {
+
+      var data_body = {
+        method: "POST",
+        url: GAIA_GLOBALS.dbi_va_api + '/analytics/st/add/' + mid,
+        dataType: 'json',
+        data: { type: 'vjs', viewerId: 0, location: window.location.href, language: GAIA_GLOBALS.lang },
+        success: function (record_data, textStatus, jqXHR) {
+
+          if (record_data) {
+
+            // set reference to record for future post data
+            va_record = record_data;
+
+            function start_va() {
+
+              // Position update post
+              beacon_interval = setInterval(function(){
+
+                // Setup the beacon interval but don't start yet
+                beacon_interval_va();
+
+              }, record_data.beaconInterval*1000);
+
+              // Full update post
+              event_interval = setInterval(function(){
+
+                // Setup the event interval but don't start yet
+                event_interval_va();
+
+              }, record_data.eventInterval*1000);
+
+            }
+
+            if(playing) {
+
+              // Playback has already began, so start the tracking intervals
+              start_va();
+
+            } else {
+
+              // Wait for the play event to fire to start tracking intervals
+              $(target).find('video').on("bcPlayer:startVA", function(e, id){
+
+                if (player_id === id) {
+
+                  start_va();
+                  // remove tracking start listeners
+                  $(target).find('video').off("bcPlayer:startVA");
+
+                }
+
+              });
+
+            }
+
+          } else {
+            console.log("WARNING: No data was returned for VA record add.");
+          }
+
+        },
+        error: function (jqXHR, textStatus, errorThrown) {
+          console.log("Error creating VA record: ", textStatus, " errorThrown: ", errorThrown);
+        }
+
+      }
+
+      // Add Auth headers when a user is logged in
+      if($.fn.isLoggedIn()) {
+
+        var auth = Cookies.getJSON('auth');
+
+        // Data from logged in user account
+        var user_data = {
+          beforeSend : function (xhr) {
+            xhr.setRequestHeader('Authorization', 'Bearer ' + auth.jwt);
+          },
+          viewerId : auth.uid
+        };
+
+        // Merge in the user data to post obj
+        $.extend(data_body, user_data);
+
+      }
+
+      $.ajax(data_body);
+
+    }
+
+    function autoPlayContent() {
+
+      // Handle playback if not blocked - ie) iOS users must click
+      var promise = myPlayer.play();
+      if (promise !== undefined) {
+        promise.then(function () {
+
+          // let the listeners know the content loaded
+          $(target).find('video').trigger("bcPlayer:contentLoadComplete");
+
+        }).catch(function (error) {
+          // Autoplay was prevented. ie) iOS users must click
+          console.log("cannot autoplay, user must interact");
+        });
+
+      }
+
+    }
+
+    //There are very few instances of a BC player that is a Gaia media (less than 10),
+    //most of those instances have a custom poster, but the rest don't have any poster
+    //data, except for the thumbnails information. This function retrieves a thumbnail and
+    //set it as the initial_poster_image, then it updates the cover art
+    function setGaiaMediaPoster(mid, callback) {
+      $.fn.getAPIData(GAIA_GLOBALS.dbi_brooklyn_api + "/media/" + mid, function (pdata) {
+        if(pdata && pdata.textTracks && pdata.textTracks.thumbnail !== null){
+          $.get(pdata.textTracks.thumbnail, function(data) {
+            //Get the first thumbnail
+            var mediaPoster = ('http'+data.split('http')[1].split('.jpeg')[0]+'.jpeg').replace('480x270', '1200x720');
+            //Set as the bg
+            $(ePlayer).find('.vjs-poster').removeClass('vjs-hidden').addClass('lazyload').attr('data-bg', mediaPoster);
+
+            if(callback) callback();
+          });
+        }
+      });
+    }
+
+    function loadGaiaMediaId(mid, callback) {
+
+      $.fn.getAPIData(GAIA_GLOBALS.dbi_brooklyn_api + "/media/" + mid + "?language[]="+ GAIA_GLOBALS.lang, function (pdata) {
+
+        if(pdata && pdata.mediaUrls && (pdata.mediaUrls.byLang !== null || pdata.mediaUrls.bcHLS !== null)){
+          var pmedia = {
+            "sources": [{
+              "src": (pdata.mediaUrls.byLang !== null && pdata.mediaUrls.byLang[GAIA_GLOBALS.lang] !== undefined) ? pdata.mediaUrls.byLang[GAIA_GLOBALS.lang] : pdata.mediaUrls.bcHLS,
+              "type": "application/x-mpegURL"
+            }]
+          };
+
+          // Initialize and create a new VA record to capture playback analytics
+          init_va(mid);
+
+          // Start the playback
+          myPlayer.catalog.load(pmedia);
+
+          if(!$.isEmptyObject(pdata.textTracks.subtitles)){
+
+            // reset captions data
+            captions = [];
+
+            const languageNames = new Intl.DisplayNames(['en'], {
+              type: 'language'
+            });
+
+            $.each(pdata.textTracks.subtitles, function (key, val){
+              captions.push({
+                kind: 'captions',
+                language: key,
+                label: languageNames.of(key),
+                src: val
+              })
+            });
+
+            loaded_language = (pdata.mediaUrls && pdata.mediaUrls.language) ? pdata.mediaUrls.language : null;
+
+          }
+
+          if(callback) callback();
+
+        } else {
+
+          console.log("There seems to be an error with the media asset id -> ", mid);
+          $(target).find('video').trigger("bcPlayer:contentLoadError", "Sorry the video you requested is not available.");
+
+        }
+
+      });
+
+    }
+
+    // Listen for standalone buttons that trigger overlay player opens
+    target.on("bcPlayer:standAloneButtonClick", function (e, id) {
+
+      if (player_id === id) {
+        open_overlay_player(id);
+      }
+
+    });
+
+    function open_overlay_player(pid) {
+
+      // show the player layer
+      $('#bc-overlay-' + pid)
+      .on('bcPlayer:ended', function(){
+
+        $(this).unbind("bcPlayer:ended");
+
+        // auto close of overlay players
+        close_overlay_player($(this).find('.bc-overlay__close, .bc-overlay__hit-close'));
+
+      })
+      .slideDown('fast', function () {
+
+        var bc_player = videojs.getPlayer('bc-player-' + pid);
+
+        // check for Gaia account media id type
+        if($(bc_player).attr('data-account') === "gaia") {
+
+          // Gaia Account content
+          var vdata = { tid: pid, vid: $(bc_player).attr('data-media-id'), acct_id: "gaia", img: '', autoplay:true, primary_language:"" };
+          $('#bc-overlay-' + pid).find('video').trigger("bcPlayer:loadNewVideo", vdata);
+
+        } else {
+          // BC Account content
+          bc_player.play();
+        }
+
+      })
+      .find('.bc-overlay__close, .bc-overlay__hit-close').click(function () {
+        close_overlay_player($(this));
+      });
+
+    }
+
+    function close_overlay_player(hit) {
+      var overlay = $(hit).closest('.bc-overlay');
+
+      $(overlay).slideUp('fast', function () {});
+
+      $('video').trigger("bcPlayer:stopAllPlayback");
+
+    }
+
+    /* ----Player Startup Actions---- */
+
+    // Else if advanced nid data is set
+    if ($(this).attr('data-bcn-id')) {
+
+      var purl = GAIA_GLOBALS.dbi_brooklyn_api + "/node/" + $(this).attr('data-bcn-id'),
+        image_loaded = false,
+        image_url = '';
+
+      $.fn.getAPIData(purl, function (pdata) {
+
+        if (pdata) {
+
+          //console.log("BC Player API Data: ", pdata);
+
+          // Buttons
+          if (pdata.type === "product_video") {
+
+            $(target).find('.bc-player__button-box').append('<div class="bc-player__details-btn"><a title="More Details" href="/' + pdata.path + '" target="_blank"><i class="fa fa-ellipsis-h" aria-hidden="true"></i></a></div>');
+
+            // Add/Remove Playlist Item
+            if ($.fn.isLoggedIn()) {
+              $(target).find('.bc-player__button-box')
+              .append('<div class="bc-player__playlist-btn" data-nid="' + pdata.nid + '"><a title="Add To Playlist" target="_blank"><i class="fa fa-plus" aria-hidden="true"></i></a></div>').end()
+              .find('.bc-player__playlist-btn').click(function () {
+                var pnid = $(this).attr('data-nid'),
+                  ptitle = $(target).find('.bc-player__title-box .bc-player__title-text:first-child').text();
+                if ($(this).find('i').hasClass('fa-plus')) {
+                  // add to playlist
+                  $(this).playlistUtils('add', pnid, ptitle);
+                } else {
+                  // remove from playlist
+                  $(this).playlistUtils('remove', pnid, ptitle);
+                }
+              })
+              .on("playlist:updatePlaylist", function (e) {
+                var pnid = $(this).attr('data-nid');
+                $(this).playlistUtils('exists', pnid, function (exists) {
+                  if (exists) {
+                    $(target).find('.bc-player__button-box')
+                    .find('.bc-player__playlist-btn i')
+                    .removeClass('fa-plus')
+                    .addClass('fa-minus')
+                    .end()
+                    .find('.bc-player__playlist-btn').attr('title', 'Remove From Playlist');
+                  } else {
+                    $(target).find('.bc-player__button-box')
+                    .find('.bc-player__playlist-btn i')
+                    .removeClass('fa-minus')
+                    .addClass('fa-plus')
+                    .end()
+                    .find('.bc-player__playlist-btn').attr('title', 'Add To Playlist');
+                  }
+                });
+              })
+              .on("playlist:addedItem", function (e, nid) {
+                if ($(target).find('.bc-player__playlist-btn').attr('data-nid') === nid) {
+                  var msg = "Item has been added to your playlist.";
+                  $(target).find('.bc-player__alert-toast').text(msg).fadeIn('slow').delay('2000').fadeOut('slow');
+                }
+              })
+              .on("playlist:removedItem", function (e, nid) {
+                if ($(target).find('.bc-player__playlist-btn').attr('data-nid') === nid) {
+                  var msg = "Item has been removed from your playlist.";
+                  $(target).find('.bc-player__alert-toast').text(msg).fadeIn('slow').delay('2000').fadeOut('slow');
+                }
+              });
+            }
+
+          } else if (pdata.type === "article") {
+            $(target).find('.bc-player__button-box').append('<div class="bc-player__details-btn"><a title="More Details" href="/' + pdata.path + '" target="_blank"><i class="fa fa-ellipsis-h" aria-hidden="true"></i></a></div>');
+          }
+
+          /* -- Start Title Box -- */
+          // Content Details based on media type
+          if (pdata.type === "product_video") {
+
+            // Yoga videos special handling
+            function get_yoga_style() {
+              var style = "";
+              $.each(pdata.classicFacets.yoga_style, function (i, val) {
+                style += val.name;
+                if (i < pdata.classicFacets.yoga_style.length - 1) {
+                  style += ", ";
+                }
+              });
+              return style;
+            }
+
+            // Series
+            if (pdata.series && pdata.series.path) {
+              $(target).find('.bc-player__title-box').append('<div class="bc-player__title-text"><a href="/' + pdata.series.path + '" target=_blank>' + pdata.series.title + '</a></div>');
+            } else if (pdata.series) {
+              $(target).find('.bc-player__title-box').append('<div class="bc-player__title-text">' + pdata.series.title + '</div>');
+            } else if (pdata.display_type === 'yoga') {
+              $(target).find('.bc-player__title-box').append('<div class="bc-player__title-text">' + get_yoga_style() + '</div>');
+            }
+
+            // Title
+            if (pdata.title && pdata.path) {
+              $(target).find('.bc-player__title-box').append('<p class="like-h4 bc-player__title-text dotdotdot"><a href="/' + pdata.path + '" target=_blank>' + pdata.title + '</a></p>');
+            } else if (pdata.title) {
+              $(target).find('.bc-player__title-box').append('<p class="like-h4 bc-player__title-text dotdotdot">' + pdata.title + '</p>');
+            }
+
+            // Season #
+            if (pdata.fields.season && pdata.fields.season[0].value) {
+
+              if (pdata.display_type === "yoga") {
+                $(target).find('.bc-player__title-box').append('<div class="bc-player__details-text">' + get_yoga_style() + '  S' + pdata.fields.season[0].value + ':Ep' + pdata.fields.episode[0].value + '</div>');
+              } else {
+                $(target).find('.bc-player__title-box').append('<div class="bc-player__details-text">S' + pdata.fields.season[0].value + ':Ep' + pdata.fields.episode[0].value + '</div>');
+              }
+
+            }
+
+            // Episode #
+            if (!pdata.fields.season && pdata.fields.episode && pdata.fields.episode[0].value) {
+              $(target).find('.bc-player__title-box').append('<div class="bc-player__details-text">Episode: ' + pdata.fields.episode[0].value + '</div>');
+            }
+
+            // Content Duration
+            if (pdata.feature && pdata.feature.duration) {
+              var dur = $.fn.getReadableDuration(pdata.feature.duration);
+              // Add a '|' divider if details exists
+              if ($(target).find('.bc-player__title-box').find('.bc-player__details-text').length) {
+                $(target).find('.bc-player__title-box').append(' | ');
+              }
+              $(target).find('.bc-player__title-box').append('<div class="bc-player__duration-text">' + dur + '</div>');
+            }
+
+          } else if (pdata.type === "article") {
+
+            // Publish Date (Creation Date)
+            if (pdata.created) {
+              var d = new Date(0);
+              d.setUTCSeconds(pdata.created);
+              var arr_months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+              $(target).find('.bc-player__title-box').append('<div class="bc-player__title-text">' + arr_months[d.getMonth()] + ' ' + d.getDay() + ', ' + d.getFullYear() + '</div>');
+            }
+            // Content Title
+            if (pdata.title && pdata.path) {
+              $(target).find('.bc-player__title-box').append('<div class="bc-player__title-text dotdotdot"><a href="/' + pdata.path + '" target=_blank>' + pdata.title + '</a></div>');
+            } else if (pdata.title) {
+              $(target).find('.bc-player__title-box').append('<div class="bc-player__title-text dotdotdot">' + pdata.title + '</div>');
+            }
+            // Description
+            if (pdata.fields.body && pdata.fields.body[0].value) {
+              var desc = pdata.fields.body[0].value;
+              // ensure the shorten the text
+              desc = $.trim(desc).substring(0, 155).split(" ").slice(0, -1).join(" ") + "...";
+              $(target).find('.bc-player__title-box').append('<div class="bc-player__details-text">' + desc + '</div>');
+            }
+          }
+
+          // Artwork
+          if (pdata.type === "product_video" || pdata.type === "product_series") {
+            image_url = pdata.keyart_16x9_withtext.keyart_864x486;
+          } else if (pdata.type === "article") {
+            image_url = pdata.article_main_image.article_1070x602;
+          }
+
+          //console.log('initial_poster_image: ', initial_poster_image);
+
+          // Load nid image if we have it
+          if (image_url !== '' && !initial_poster_image) {
+            //console.log("update art no custom image")
+
+            //console.log("function call updateCoverArt 4")
+            updateCoverArt(image_url);
+          } else {
+            //console.log("function call contentLoadComplete 3")
+            contentLoadComplete();
+          }
+
+        } else {
+          console.log("WARNING: No nid data was returned. Data undefined...");
+          contentLoadComplete();
+        }
+
+      });
+
+    } else if (player_id) {
+
+      // remove loader
+      contentLoadComplete();
+    }
+
+    $('#bc-grid-tile-' + player_id).click(function(){
+      open_overlay_player(player_id);
+    });
+
+
+  });
+
+};
+
+// Generic Actions for ALL BC Players
+$(document).ready(function (){
+
+  // this is because BC don't have any way to track the poster,
+  // so this mutationObserver allows us to lazyload the poster
+  // and prevent the BC player to load the poster before lazysizes
+  $.each( $('.bc-container').find('video'), function( index, item ){
+    var observer = new MutationObserver(function(mutations) {
+
+      mutations.forEach(function(mutation)
+      {
+        // console.log('mutation observer', mutation);
+        var poster = $(mutation.target).attr('poster');
+        if(poster.length > 0) {
+          $(mutation.target).attr('poster','');
+          $(mutation.target).parent().find('.vjs-poster').attr('style','').addClass('vjs-hidden lazyload').attr('data-bg', poster);
+          $(mutation.target).parent().find('.vjs-poster').removeClass('vjs-hidden');
+        }
+        observer.disconnect();
+      });
+    });
+
+    observer.observe(item, {attributes: true});
+  });
+
+  /* ----Overlay Player Actions---- */
+  $(".standalone-bc-play-btn").click(function () {
+
+    var player_id = $(this).attr('data-pid');
+    console.log("stand alone click: ", player_id)
+
+    $('#bc-grid-player-' + player_id).trigger("bcPlayer:standAloneButtonClick", player_id);
+
+  });
+
+});
